@@ -26,6 +26,7 @@ Examples:
     parser.add_argument("--port", type=int, default=5000, help="Web server port (default: 5000)")
     parser.add_argument("--geoip-db", help="Path to MaxMind GeoIP2 database file")
     parser.add_argument("--no-capture", action="store_true", help="Start without packet capture (web UI only)")
+    parser.add_argument("--demo", action="store_true", help="Demo mode: filter traffic to show only visitor's own IP")
 
     args = parser.parse_args()
 
@@ -41,6 +42,7 @@ Examples:
 
     config.web_host = args.host
     config.web_port = args.port
+    config.demo_mode = args.demo
 
     # Check for root/sudo (required for packet capture)
     import os
@@ -55,6 +57,8 @@ Examples:
     app = create_app(start_capture=not args.no_capture)
 
     print(f"Starting ParkRanger on http://{config.web_host}:{config.web_port}")
+    if config.demo_mode:
+        print("Demo mode enabled: visitors will only see their own IP")
     if not args.no_capture:
         print(f"Capturing on interface: {config.interface or 'all'}")
         print(f"Monitoring ports: {config.port_filter}")
