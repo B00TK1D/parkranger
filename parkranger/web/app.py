@@ -1,9 +1,9 @@
 import os
-import threading
 import time
+from queue import Queue, Empty
 
 from flask import Flask, render_template, jsonify, request
-from flask_socketio import SocketIO
+from flask_socketio import SocketIO, emit
 
 from ..capture.sniffer import PacketSniffer
 from ..capture.rtt import RTTTracker
@@ -20,13 +20,17 @@ sniffer: PacketSniffer = None
 geolocator: GeoLocator = None
 city_finder: CityFinder = None
 fingerprinter: VPNFingerprinter = None
+event_queue: Queue = None  # Queue for cross-thread event passing
 
 
 def create_app(start_capture: bool = True) -> Flask:
-    global rtt_tracker, sniffer, geolocator, city_finder, fingerprinter
+    global rtt_tracker, sniffer, geolocator, city_finder, fingerprinter, event_queue
 
     app = Flask(__name__, template_folder="templates", static_folder="static")
     app.config["SECRET_KEY"] = os.urandom(24)
+
+    # Initialize event queue for cross-thread communication
+    event_queue = Queue()
 
     # Initialize components
     rtt_tracker = RTTTracker()
@@ -35,7 +39,7 @@ def create_app(start_capture: bool = True) -> Flask:
     fingerprinter = VPNFingerprinter(rtt_tracker, geolocator, city_finder)
 
     sniffer = PacketSniffer(rtt_tracker)
-    sniffer.add_callback(on_packet_event)
+    sniffer.add_callback(queue_packet_event)  # Queue events instead of direct emit
 
     socketio.init_app(app)
     register_routes(app)
@@ -45,6 +49,12 @@ def create_app(start_capture: bool = True) -> Flask:
         start_background_tasks()
 
     return app
+
+
+def queue_packet_event(event_type: str, data: dict) -> None:
+    """Queue events from sniffer thread for processing in eventlet context."""
+    if event_queue is not None:
+        event_queue.put((event_type, data))
 
 
 def on_packet_event(event_type: str, data: dict) -> None:
@@ -67,9 +77,21 @@ def on_packet_event(event_type: str, data: dict) -> None:
 
 
 def start_background_tasks() -> None:
+    def event_processor():
+        """Process events from the queue in eventlet context."""
+        while True:
+            try:
+                event_type, data = event_queue.get(timeout=0.1)
+                on_packet_event(event_type, data)
+            except Empty:
+                pass
+            except Exception:
+                pass
+            socketio.sleep(0)  # Yield to other greenlets
+
     def ping_worker():
         while True:
-            time.sleep(10)
+            socketio.sleep(10)
             try:
                 ips = sniffer.get_unique_remote_ips()
                 for ip in list(ips)[:20]:  # Limit to 20 at a time
@@ -79,12 +101,13 @@ def start_background_tasks() -> None:
                         fingerprint = fingerprinter.analyze_ip(ip)
                         if fingerprint:
                             socketio.emit("fingerprint_update", fingerprint.to_dict())
+                    socketio.sleep(0.1)  # Yield to other greenlets
             except Exception:
                 pass
 
     def cleanup_worker():
         while True:
-            time.sleep(60)
+            socketio.sleep(60)
             try:
                 sniffer.cleanup_old_connections()
                 rtt_tracker.cleanup_stale()
@@ -92,8 +115,9 @@ def start_background_tasks() -> None:
             except Exception:
                 pass
 
-    threading.Thread(target=ping_worker, daemon=True).start()
-    threading.Thread(target=cleanup_worker, daemon=True).start()
+    socketio.start_background_task(event_processor)
+    socketio.start_background_task(ping_worker)
+    socketio.start_background_task(cleanup_worker)
 
 
 def register_routes(app: Flask) -> None:

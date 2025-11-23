@@ -133,7 +133,7 @@
     <script>
         const fingerprints = new Map();
         const markers = new Map();
-        const rings = new Map();
+        let activeRing = null;  // Only one ring shown at a time (on selection)
         let selectedIp = null;
 
         // Initialize map
@@ -230,31 +230,15 @@
             }).join('');
         }
 
-        // Helper function to create circle points for polygon (for donut/ring shape)
-        function createCirclePoints(centerLat, centerLng, radiusKm, numPoints = 64) {
-            const points = [];
-            const earthRadius = 6371; // km
-            for (let i = 0; i < numPoints; i++) {
-                const angle = (i / numPoints) * 2 * Math.PI;
-                const latOffset = (radiusKm / earthRadius) * (180 / Math.PI) * Math.cos(angle);
-                const lngOffset = (radiusKm / earthRadius) * (180 / Math.PI) * Math.sin(angle) / Math.cos(centerLat * Math.PI / 180);
-                points.push([centerLat + latOffset, centerLng + lngOffset]);
-            }
-            return points;
-        }
-
         function updateMapMarker(fp) {
             if (!fp.location) return;
 
             const lat = fp.location.latitude;
             const lng = fp.location.longitude;
 
-            // Remove existing marker and ring
+            // Remove existing marker
             if (markers.has(fp.ip)) {
                 map.removeLayer(markers.get(fp.ip));
-            }
-            if (rings.has(fp.ip)) {
-                map.removeLayer(rings.get(fp.ip));
             }
 
             // Create marker
@@ -271,57 +255,6 @@
                 .on('click', () => selectFingerprint(fp.ip));
 
             markers.set(fp.ip, marker);
-
-            // Create band/ring if VPN likely (10ms uncertainty band)
-            if (fp.is_vpn_likely && fp.estimated_distance_km > 0) {
-                const outerRadiusKm = fp.estimated_distance_km;
-                // 10ms RTT = 5ms one-way = 5ms * 200 km/ms = 1000km band width
-                const bandWidthKm = 1000;
-                const innerRadiusKm = Math.max(0, outerRadiusKm - bandWidthKm);
-
-                // Create a layer group to hold both circles and the fill
-                const ringGroup = L.layerGroup();
-
-                // Create filled band using a polygon ring (donut shape)
-                if (innerRadiusKm > 0) {
-                    const outerPoints = createCirclePoints(lat, lng, outerRadiusKm);
-                    const innerPoints = createCirclePoints(lat, lng, innerRadiusKm).reverse();
-                    const bandPolygon = L.polygon([outerPoints, innerPoints], {
-                        color: '#f97316',
-                        fillColor: '#f97316',
-                        fillOpacity: 0.15,
-                        weight: 0
-                    });
-                    ringGroup.addLayer(bandPolygon);
-                }
-
-                // Outer circle stroke
-                const outerCircle = L.circle([lat, lng], {
-                    radius: outerRadiusKm * 1000,
-                    color: '#f97316',
-                    fillColor: 'transparent',
-                    fillOpacity: 0,
-                    weight: 2,
-                    dashArray: '5, 5'
-                });
-                ringGroup.addLayer(outerCircle);
-
-                // Inner circle stroke (if inner radius > 0)
-                if (innerRadiusKm > 0) {
-                    const innerCircle = L.circle([lat, lng], {
-                        radius: innerRadiusKm * 1000,
-                        color: '#f97316',
-                        fillColor: 'transparent',
-                        fillOpacity: 0,
-                        weight: 2,
-                        dashArray: '5, 5'
-                    });
-                    ringGroup.addLayer(innerCircle);
-                }
-
-                ringGroup.addTo(map);
-                rings.set(fp.ip, ringGroup);
-            }
         }
 
         function selectFingerprint(ip) {
@@ -331,8 +264,56 @@
 
             showDetail(ip);
 
-            if (fp.location) {
-                map.setView([fp.location.latitude, fp.location.longitude], 6);
+            // Clear any existing ring
+            if (activeRing) {
+                map.removeLayer(activeRing);
+                activeRing = null;
+            }
+
+            if (!fp.location) return;
+
+            const lat = fp.location.latitude;
+            const lng = fp.location.longitude;
+
+            // Create and show ring if VPN likely
+            if (fp.is_vpn_likely && fp.estimated_distance_km > 0) {
+                const outerRadiusKm = fp.estimated_distance_km;
+                const bandWidthKm = 1000; // 10ms RTT band
+                const innerRadiusKm = Math.max(0, outerRadiusKm - bandWidthKm);
+
+                const ringGroup = L.layerGroup();
+
+                // Outer circle (max range)
+                const outerCircle = L.circle([lat, lng], {
+                    radius: outerRadiusKm * 1000,
+                    color: '#f97316',
+                    fillColor: '#f97316',
+                    fillOpacity: 0.08,
+                    weight: 3
+                });
+                ringGroup.addLayer(outerCircle);
+
+                // Inner circle (min range) - creates visual "hole"
+                if (innerRadiusKm > 0) {
+                    const innerCircle = L.circle([lat, lng], {
+                        radius: innerRadiusKm * 1000,
+                        color: '#f97316',
+                        fillColor: '#161b22',
+                        fillOpacity: 0.9,
+                        weight: 3,
+                        dashArray: '8, 4'
+                    });
+                    ringGroup.addLayer(innerCircle);
+                }
+
+                ringGroup.addTo(map);
+                activeRing = ringGroup;
+
+                // Zoom to fit the entire outer circle with padding
+                map.fitBounds(outerCircle.getBounds(), { padding: [50, 50] });
+            } else {
+                // No VPN ring, just center on location
+                map.setView([lat, lng], 6);
             }
         }
 
@@ -369,6 +350,11 @@
         function hideDetail() {
             document.getElementById('detail-panel').classList.add('hidden');
             selectedIp = null;
+            // Clear active ring when closing detail
+            if (activeRing) {
+                map.removeLayer(activeRing);
+                activeRing = null;
+            }
         }
 
         async function updateStats() {

@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# Eventlet monkey patching must happen before any other imports
+import eventlet
+eventlet.monkey_patch()
+
 import argparse
 import sys
 
