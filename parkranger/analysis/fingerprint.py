@@ -58,7 +58,11 @@ class VPNFingerprinter:
         return distance_km
 
     def _calculate_confidence(self, measurement: RTTMeasurement) -> float:
+        # Need both TCP and ICMP samples for VPN detection confidence
         if not measurement.tcp_rtt_samples or not measurement.icmp_rtt_samples:
+            # If we only have ICMP, we can still show location but no VPN detection
+            if measurement.icmp_rtt_samples:
+                return 0.1  # Low confidence, but not zero
             return 0.0
 
         # More samples = higher confidence
@@ -83,9 +87,6 @@ class VPNFingerprinter:
     def analyze_ip(self, ip: str, force_ping: bool = False) -> Optional[VPNFingerprint]:
         measurement = self.rtt_tracker.get_measurement(ip)
 
-        if measurement.tcp_rtt is None:
-            return None
-
         # Get or create fingerprint
         with self._lock:
             if ip not in self._fingerprints:
@@ -96,7 +97,7 @@ class VPNFingerprinter:
         if fingerprint.location is None:
             fingerprint.location = self.geolocator.lookup(ip)
 
-        # Ping if needed
+        # Ping if needed (always ping if we don't have ICMP RTT yet)
         if measurement.icmp_rtt is None or force_ping:
             self.rtt_tracker.ping_ip(ip, force=force_ping)
             measurement = self.rtt_tracker.get_measurement(ip)
