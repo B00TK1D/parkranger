@@ -230,19 +230,6 @@
             }).join('');
         }
 
-        // Helper function to create circle points for polygon (for donut/ring shape)
-        function createCirclePoints(centerLat, centerLng, radiusKm, numPoints = 64) {
-            const points = [];
-            const earthRadius = 6371; // km
-            for (let i = 0; i < numPoints; i++) {
-                const angle = (i / numPoints) * 2 * Math.PI;
-                const latOffset = (radiusKm / earthRadius) * (180 / Math.PI) * Math.cos(angle);
-                const lngOffset = (radiusKm / earthRadius) * (180 / Math.PI) * Math.sin(angle) / Math.cos(centerLat * Math.PI / 180);
-                points.push([centerLat + latOffset, centerLng + lngOffset]);
-            }
-            return points;
-        }
-
         function updateMapMarker(fp) {
             if (!fp.location) return;
 
@@ -279,42 +266,28 @@
                 const bandWidthKm = 1000;
                 const innerRadiusKm = Math.max(0, outerRadiusKm - bandWidthKm);
 
-                // Create a layer group to hold both circles and the fill
+                // Create a layer group to hold both circles
                 const ringGroup = L.layerGroup();
 
-                // Create filled band using a polygon ring (donut shape)
-                if (innerRadiusKm > 0) {
-                    const outerPoints = createCirclePoints(lat, lng, outerRadiusKm);
-                    const innerPoints = createCirclePoints(lat, lng, innerRadiusKm).reverse();
-                    const bandPolygon = L.polygon([outerPoints, innerPoints], {
-                        color: '#f97316',
-                        fillColor: '#f97316',
-                        fillOpacity: 0.15,
-                        weight: 0
-                    });
-                    ringGroup.addLayer(bandPolygon);
-                }
-
-                // Outer circle stroke
+                // Outer circle (max range) - solid stroke
                 const outerCircle = L.circle([lat, lng], {
                     radius: outerRadiusKm * 1000,
                     color: '#f97316',
-                    fillColor: 'transparent',
-                    fillOpacity: 0,
-                    weight: 2,
-                    dashArray: '5, 5'
+                    fillColor: '#f97316',
+                    fillOpacity: 0.08,
+                    weight: 3
                 });
                 ringGroup.addLayer(outerCircle);
 
-                // Inner circle stroke (if inner radius > 0)
+                // Inner circle (min range) - dashed stroke, cuts visual "hole"
                 if (innerRadiusKm > 0) {
                     const innerCircle = L.circle([lat, lng], {
                         radius: innerRadiusKm * 1000,
                         color: '#f97316',
-                        fillColor: 'transparent',
-                        fillOpacity: 0,
-                        weight: 2,
-                        dashArray: '5, 5'
+                        fillColor: '#161b22',
+                        fillOpacity: 0.9,
+                        weight: 3,
+                        dashArray: '8, 4'
                     });
                     ringGroup.addLayer(innerCircle);
                 }
