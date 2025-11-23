@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ParkRanger - VPN Fingerprinting</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        dark: {
+                            900: '#0d1117',
+                            800: '#161b22',
+                            700: '#21262d',
+                            600: '#30363d',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        .leaflet-container { background: #161b22; }
+        .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightness(0.9) contrast(0.9); }
+        .leaflet-popup-content-wrapper { background: #21262d; color: #e6edf3; }
+        .leaflet-popup-tip { background: #21262d; }
+        .custom-ring { fill: none; stroke-opacity: 0.6; }
+        .scrollbar-thin::-webkit-scrollbar { width: 6px; }
+        .scrollbar-thin::-webkit-scrollbar-track { background: #21262d; }
+        .scrollbar-thin::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
+    </style>
+</head>
+<body class="bg-dark-900 text-gray-200 min-h-screen">
+    <div class="flex h-screen">
+        <!-- Sidebar -->
+        <div class="w-96 bg-dark-800 border-r border-dark-600 flex flex-col">
+            <!-- Header -->
+            <div class="p-4 border-b border-dark-600">
+                <h1 class="text-xl font-bold text-white flex items-center gap-2">
+                    <svg class="w-6 h-6 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"></path>
+                    </svg>
+                    ParkRanger
+                </h1>
+                <p class="text-sm text-gray-500 mt-1">VPN Fingerprinting Tool</p>
+            </div>
+
+            <!-- Stats -->
+            <div class="p-4 border-b border-dark-600 grid grid-cols-2 gap-3">
+                <div class="bg-dark-700 rounded-lg p-3">
+                    <div class="text-2xl font-bold text-white" id="stat-connections">0</div>
+                    <div class="text-xs text-gray-500">Active Connections</div>
+                </div>
+                <div class="bg-dark-700 rounded-lg p-3">
+                    <div class="text-2xl font-bold text-white" id="stat-ips">0</div>
+                    <div class="text-xs text-gray-500">Unique IPs</div>
+                </div>
+                <div class="bg-dark-700 rounded-lg p-3">
+                    <div class="text-2xl font-bold text-white" id="stat-analyzed">0</div>
+                    <div class="text-xs text-gray-500">Analyzed</div>
+                </div>
+                <div class="bg-dark-700 rounded-lg p-3">
+                    <div class="text-2xl font-bold text-orange-500" id="stat-vpn">0</div>
+                    <div class="text-xs text-gray-500">VPN Likely</div>
+                </div>
+            </div>
+
+            <!-- Connection List -->
+            <div class="flex-1 overflow-y-auto scrollbar-thin p-4">
+                <h2 class="text-sm font-semibold text-gray-400 mb-3">FINGERPRINTS</h2>
+                <div id="fingerprint-list" class="space-y-2">
+                    <div class="text-gray-500 text-sm">Waiting for connections...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Content -->
+        <div class="flex-1 flex flex-col">
+            <!-- Map -->
+            <div class="flex-1 relative">
+                <div id="map" class="w-full h-full"></div>
+            </div>
+
+            <!-- Detail Panel -->
+            <div id="detail-panel" class="h-72 bg-dark-800 border-t border-dark-600 p-4 hidden">
+                <div class="flex justify-between items-start mb-4">
+                    <div>
+                        <h3 class="text-lg font-bold text-white" id="detail-ip">-</h3>
+                        <p class="text-sm text-gray-500" id="detail-location">-</p>
+                    </div>
+                    <button onclick="hideDetail()" class="text-gray-500 hover:text-white">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                        </svg>
+                    </button>
+                </div>
+
+                <div class="grid grid-cols-4 gap-4 mb-4">
+                    <div class="bg-dark-700 rounded-lg p-3">
+                        <div class="text-lg font-bold text-blue-400" id="detail-tcp-rtt">-</div>
+                        <div class="text-xs text-gray-500">TCP RTT (ms)</div>
+                    </div>
+                    <div class="bg-dark-700 rounded-lg p-3">
+                        <div class="text-lg font-bold text-green-400" id="detail-icmp-rtt">-</div>
+                        <div class="text-xs text-gray-500">ICMP RTT (ms)</div>
+                    </div>
+                    <div class="bg-dark-700 rounded-lg p-3">
+                        <div class="text-lg font-bold text-orange-400" id="detail-diff">-</div>
+                        <div class="text-xs text-gray-500">Difference (ms)</div>
+                    </div>
+                    <div class="bg-dark-700 rounded-lg p-3">
+                        <div class="text-lg font-bold text-purple-400" id="detail-distance">-</div>
+                        <div class="text-xs text-gray-500">Est. Distance (km)</div>
+                    </div>
+                </div>
+
+                <div>
+                    <h4 class="text-sm font-semibold text-gray-400 mb-2">POSSIBLE LOCATIONS (by population)</h4>
+                    <div id="detail-cities" class="flex flex-wrap gap-2">
+                        <span class="text-gray-500 text-sm">No data</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const fingerprints = new Map();
+        const markers = new Map();
+        const rings = new Map();
+        let selectedIp = null;
+
+        // Initialize map
+        const map = L.map('map', {
+            center: [30, 0],
+            zoom: 2,
+            zoomControl: true,
+        });
+
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap'
+        }).addTo(map);
+
+        // Socket.io connection
+        const socket = io();
+
+        socket.on('connect', () => {
+            console.log('Connected to server');
+            updateStats();
+        });
+
+        socket.on('fingerprint_update', (data) => {
+            updateFingerprint(data);
+        });
+
+        function updateFingerprint(fp) {
+            fingerprints.set(fp.ip, fp);
+            updateFingerprintList();
+            updateMapMarker(fp);
+            updateStats();
+
+            if (selectedIp === fp.ip) {
+                showDetail(fp.ip);
+            }
+        }
+
+        function updateFingerprintList() {
+            const container = document.getElementById('fingerprint-list');
+            const sorted = Array.from(fingerprints.values())
+                .sort((a, b) => b.last_updated - a.last_updated);
+
+            if (sorted.length === 0) {
+                container.innerHTML = '<div class="text-gray-500 text-sm">Waiting for connections...</div>';
+                return;
+            }
+
+            container.innerHTML = sorted.map(fp => {
+                const vpnClass = fp.is_vpn_likely ? 'border-orange-500' : 'border-dark-600';
+                const vpnBadge = fp.is_vpn_likely ? '<span class="px-1.5 py-0.5 text-xs bg-orange-500/20 text-orange-400 rounded">VPN</span>' : '';
+                const location = fp.location ? `${fp.location.city || 'Unknown'}, ${fp.location.country_code || ''}` : 'Locating...';
+                const rtt = fp.tcp_rtt_ms ? `${fp.tcp_rtt_ms.toFixed(1)}ms` : '-';
+
+                return `
+                    <div class="bg-dark-700 border ${vpnClass} rounded-lg p-3 cursor-pointer hover:bg-dark-600 transition-colors"
+                         onclick="selectFingerprint('${fp.ip}')">
+                        <div class="flex justify-between items-start">
+                            <div>
+                                <div class="font-mono text-sm text-white">${fp.ip}</div>
+                                <div class="text-xs text-gray-500 mt-1">${location}</div>
+                            </div>
+                            <div class="text-right">
+                                ${vpnBadge}
+                                <div class="text-xs text-gray-500 mt-1">RTT: ${rtt}</div>
+                            </div>
+                        </div>
+                        ${fp.rtt_difference_ms > 0 ? `
+                            <div class="mt-2 text-xs text-orange-400">
+                                +${fp.rtt_difference_ms.toFixed(1)}ms latency (~${(fp.estimated_distance_km || 0).toFixed(0)}km)
+                            </div>
+                        ` : ''}
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function updateMapMarker(fp) {
+            if (!fp.location) return;
+
+            const lat = fp.location.latitude;
+            const lng = fp.location.longitude;
+
+            // Remove existing marker and ring
+            if (markers.has(fp.ip)) {
+                map.removeLayer(markers.get(fp.ip));
+            }
+            if (rings.has(fp.ip)) {
+                map.removeLayer(rings.get(fp.ip));
+            }
+
+            // Create marker
+            const markerColor = fp.is_vpn_likely ? '#f97316' : '#22c55e';
+            const markerIcon = L.divIcon({
+                className: 'custom-marker',
+                html: `<div style="width: 12px; height: 12px; background: ${markerColor}; border: 2px solid white; border-radius: 50%; box-shadow: 0 2px 4px rgba(0,0,0,0.3);"></div>`,
+                iconSize: [12, 12],
+                iconAnchor: [6, 6]
+            });
+
+            const marker = L.marker([lat, lng], { icon: markerIcon })
+                .addTo(map)
+                .on('click', () => selectFingerprint(fp.ip));
+
+            markers.set(fp.ip, marker);
+
+            // Create ring if VPN likely
+            if (fp.is_vpn_likely && fp.estimated_distance_km > 0) {
+                const ring = L.circle([lat, lng], {
+                    radius: fp.estimated_distance_km * 1000,
+                    color: '#f97316',
+                    fillColor: '#f97316',
+                    fillOpacity: 0.1,
+                    weight: 2,
+                    dashArray: '5, 5'
+                }).addTo(map);
+
+                rings.set(fp.ip, ring);
+            }
+        }
+
+        function selectFingerprint(ip) {
+            selectedIp = ip;
+            const fp = fingerprints.get(ip);
+            if (!fp) return;
+
+            showDetail(ip);
+
+            if (fp.location) {
+                map.setView([fp.location.latitude, fp.location.longitude], 6);
+            }
+        }
+
+        function showDetail(ip) {
+            const fp = fingerprints.get(ip);
+            if (!fp) return;
+
+            const panel = document.getElementById('detail-panel');
+            panel.classList.remove('hidden');
+
+            document.getElementById('detail-ip').textContent = fp.ip;
+            document.getElementById('detail-location').textContent = fp.location
+                ? `${fp.location.city || 'Unknown'}, ${fp.location.region || ''}, ${fp.location.country || ''}`
+                : 'Location unknown';
+
+            document.getElementById('detail-tcp-rtt').textContent = fp.tcp_rtt_ms ? fp.tcp_rtt_ms.toFixed(2) : '-';
+            document.getElementById('detail-icmp-rtt').textContent = fp.icmp_rtt_ms ? fp.icmp_rtt_ms.toFixed(2) : '-';
+            document.getElementById('detail-diff').textContent = fp.rtt_difference_ms ? fp.rtt_difference_ms.toFixed(2) : '-';
+            document.getElementById('detail-distance').textContent = fp.estimated_distance_km ? fp.estimated_distance_km.toFixed(0) : '-';
+
+            const citiesContainer = document.getElementById('detail-cities');
+            if (fp.possible_cities && fp.possible_cities.length > 0) {
+                citiesContainer.innerHTML = fp.possible_cities.map(city => `
+                    <span class="px-2 py-1 bg-dark-700 rounded text-sm">
+                        ${city.name}, ${city.country}
+                        <span class="text-gray-500 text-xs">(${(city.population / 1000000).toFixed(1)}M)</span>
+                    </span>
+                `).join('');
+            } else {
+                citiesContainer.innerHTML = '<span class="text-gray-500 text-sm">No cities in range</span>';
+            }
+        }
+
+        function hideDetail() {
+            document.getElementById('detail-panel').classList.add('hidden');
+            selectedIp = null;
+        }
+
+        async function updateStats() {
+            try {
+                const response = await fetch('/api/stats');
+                const stats = await response.json();
+                document.getElementById('stat-connections').textContent = stats.active_connections;
+                document.getElementById('stat-ips').textContent = stats.unique_ips;
+                document.getElementById('stat-analyzed').textContent = stats.analyzed_ips;
+                document.getElementById('stat-vpn').textContent = stats.vpn_likely;
+            } catch (e) {
+                console.error('Failed to fetch stats:', e);
+            }
+        }
+
+        // Initial data load
+        async function loadInitialData() {
+            try {
+                const response = await fetch('/api/fingerprints');
+                const data = await response.json();
+                for (const [ip, fp] of Object.entries(data)) {
+                    updateFingerprint(fp);
+                }
+            } catch (e) {
+                console.error('Failed to load fingerprints:', e);
+            }
+        }
+
+        loadInitialData();
+        setInterval(updateStats, 5000);
+    </script>
+</body>
+</html>
