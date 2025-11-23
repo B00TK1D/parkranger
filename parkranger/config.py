@@ -15,7 +15,7 @@ class Config:
     max_connections: int = 1000
     geoip_db_path: Optional[str] = None
     speed_of_light_km_ms: float = 200.0  # ~2/3 speed of light in fiber
-    vpn_latency_offset_ms: float = 5.0  # Internal VPN processing latency to subtract
+    vpn_latency_offset_ms: float = 0.0  # Internal VPN processing latency to subtract
     demo_mode: bool = False  # Filter traffic to only show visitor's own IP
 
     @classmethod
@@ -30,7 +30,7 @@ class Config:
             connection_timeout=int(os.environ.get("PARKRANGER_CONN_TIMEOUT", "300")),
             max_connections=int(os.environ.get("PARKRANGER_MAX_CONNS", "1000")),
             geoip_db_path=os.environ.get("PARKRANGER_GEOIP_DB"),
-            vpn_latency_offset_ms=float(os.environ.get("PARKRANGER_VPN_LATENCY_OFFSET", "5.0")),
+            vpn_latency_offset_ms=float(os.environ.get("PARKRANGER_VPN_LATENCY_OFFSET", "0.0")),
         )
 
 
