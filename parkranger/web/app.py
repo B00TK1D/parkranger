@@ -76,19 +76,29 @@ def can_refresh_ip(ip: str, min_interval: float = 1.0) -> bool:
 def get_visitor_ip() -> str:
     """Get the real IP of the visitor, respecting X-Forwarded-For headers."""
     # Check X-Forwarded-For header first (for proxies/load balancers)
-    if request.headers.get("X-Forwarded-For"):
+    # Try multiple common header variations and check environ directly for WebSocket
+    forwarded_for = (
+        request.headers.get("X-Forwarded-For") or
+        request.headers.get("X-FORWARDED-FOR") or
+        request.environ.get("HTTP_X_FORWARDED_FOR")
+    )
+    if forwarded_for:
         # X-Forwarded-For can contain multiple IPs, the first is the original client
-        forwarded_for = request.headers.get("X-Forwarded-For")
         ips = [ip.strip() for ip in forwarded_for.split(",")]
-        if ips:
+        if ips and ips[0]:
             return ips[0]
 
     # Fall back to X-Real-IP header
-    if request.headers.get("X-Real-IP"):
-        return request.headers.get("X-Real-IP")
+    real_ip = (
+        request.headers.get("X-Real-IP") or
+        request.headers.get("X-REAL-IP") or
+        request.environ.get("HTTP_X_REAL_IP")
+    )
+    if real_ip:
+        return real_ip
 
-    # Fall back to remote_addr
-    return request.remote_addr or ""
+    # Fall back to remote_addr (also check environ for WebSocket)
+    return request.remote_addr or request.environ.get("REMOTE_ADDR") or ""
 
 
 def create_app(start_capture: bool = True) -> Flask:

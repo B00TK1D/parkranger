@@ -135,6 +135,8 @@
         const markers = new Map();
         let activeRing = null;  // Only one ring shown at a time (on selection)
         let selectedIp = null;
+        let lastListUpdate = 0;  // Rate limiting for list updates
+        let pendingListUpdate = null;  // Pending update timer
 
         // Initialize map
         const map = L.map('map', {
@@ -192,6 +194,26 @@
         }
 
         function updateFingerprintList() {
+            // Debounce list updates to prevent flickering (max once per 500ms)
+            const now = Date.now();
+            const minInterval = 500;
+
+            if (now - lastListUpdate < minInterval) {
+                // Schedule an update for later if not already pending
+                if (!pendingListUpdate) {
+                    pendingListUpdate = setTimeout(() => {
+                        pendingListUpdate = null;
+                        updateFingerprintListNow();
+                    }, minInterval - (now - lastListUpdate));
+                }
+                return;
+            }
+
+            updateFingerprintListNow();
+        }
+
+        function updateFingerprintListNow() {
+            lastListUpdate = Date.now();
             const container = document.getElementById('fingerprint-list');
             const sorted = Array.from(fingerprints.values())
                 .sort((a, b) => b.last_updated - a.last_updated);
