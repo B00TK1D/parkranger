@@ -183,19 +183,9 @@ class PacketSniffer:
         elif flags & 0x10:  # ACK
             if conn.state == "syn_ack_received":
                 conn.state = "established"
-
-            # Track data ACKs for ongoing RTT measurement
-            if tcp_layer.ack:
-                rtt = self.rtt_tracker.record_ack(src_ip, src_port, dst_ip, dst_port, tcp_layer.ack)
-                if rtt is not None:
-                    self._notify_callbacks("rtt_update", {
-                        "ip": remote_ip,
-                        "tcp_rtt": rtt,
-                    })
-
-        # Track outgoing data for RTT measurement
-        if is_outgoing and len(tcp_layer.payload) > 0:
-            self.rtt_tracker.record_data_sent(src_ip, src_port, dst_ip, dst_port, tcp_layer.seq)
+            # Note: We don't track data ACKs for RTT as they can include
+            # delayed ACKs and application processing time. Only the initial
+            # SYN/SYN-ACK handshake gives accurate network RTT.
 
         if flags & 0x01 or flags & 0x04:  # FIN or RST
             conn.state = "closed"

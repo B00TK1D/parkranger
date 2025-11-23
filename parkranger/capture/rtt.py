@@ -47,20 +47,28 @@ class RTTMeasurement:
 
 
 class RTTTracker:
+    """
+    Tracks RTT measurements for IP addresses.
+
+    TCP RTT is measured only during the initial handshake (SYN -> SYN-ACK)
+    to get accurate network latency without application processing delays.
+    """
+
     def __init__(self):
         self._measurements: dict[str, RTTMeasurement] = defaultdict(RTTMeasurement)
         self._pending_syns: dict[tuple[str, int, str, int], float] = {}
-        self._pending_data: dict[tuple[str, int, str, int, int], float] = {}
         self._lock = threading.Lock()
         self._ping_cache: dict[str, float] = {}
         self._ping_cache_time: dict[str, float] = {}
 
     def record_syn(self, src_ip: str, src_port: int, dst_ip: str, dst_port: int) -> None:
+        """Record when a SYN packet is sent to start RTT measurement."""
         key = (src_ip, src_port, dst_ip, dst_port)
         with self._lock:
             self._pending_syns[key] = time.time()
 
     def record_syn_ack(self, src_ip: str, src_port: int, dst_ip: str, dst_port: int) -> Optional[float]:
+        """Record when SYN-ACK is received and calculate RTT from the initial handshake."""
         key = (dst_ip, dst_port, src_ip, src_port)  # Reversed for response
         with self._lock:
             if key in self._pending_syns:
@@ -68,22 +76,6 @@ class RTTTracker:
                 rtt_ms = (time.time() - syn_time) * 1000
                 self._measurements[src_ip].add_tcp_sample(rtt_ms)
                 return rtt_ms
-        return None
-
-    def record_data_sent(self, src_ip: str, src_port: int, dst_ip: str, dst_port: int, seq: int) -> None:
-        key = (src_ip, src_port, dst_ip, dst_port, seq)
-        with self._lock:
-            if key not in self._pending_data:
-                self._pending_data[key] = time.time()
-
-    def record_ack(self, src_ip: str, src_port: int, dst_ip: str, dst_port: int, ack: int) -> Optional[float]:
-        with self._lock:
-            for key in list(self._pending_data.keys()):
-                if key[0] == dst_ip and key[2] == src_ip and key[4] < ack:
-                    sent_time = self._pending_data.pop(key)
-                    rtt_ms = (time.time() - sent_time) * 1000
-                    self._measurements[src_ip].add_tcp_sample(rtt_ms)
-                    return rtt_ms
         return None
 
     def get_measurement(self, ip: str) -> RTTMeasurement:
@@ -128,12 +120,9 @@ class RTTTracker:
         return None
 
     def cleanup_stale(self, max_age: float = 30.0) -> None:
+        """Clean up pending SYN packets that never received a response."""
         now = time.time()
         with self._lock:
             stale_syns = [k for k, v in self._pending_syns.items() if now - v > max_age]
             for k in stale_syns:
                 del self._pending_syns[k]
-
-            stale_data = [k for k, v in self._pending_data.items() if now - v > max_age]
-            for k in stale_data:
-                del self._pending_data[k]
