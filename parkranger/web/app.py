@@ -28,6 +28,7 @@ event_queue: Queue = None  # Queue for cross-thread event passing
 database: Database = None
 local_ips: set[str] = set()  # Server's own IP addresses to ignore
 last_refresh_time: dict[str, float] = {}  # Rate limiting for refreshes
+registered_real_ips: set[str] = set()  # Real client IPs behind proxies to analyze
 
 
 def get_local_ips() -> set[str]:
@@ -99,6 +100,17 @@ def get_visitor_ip() -> str:
 
     # Fall back to remote_addr (also check environ for WebSocket)
     return request.remote_addr or request.environ.get("REMOTE_ADDR") or ""
+
+
+def register_real_client_ip(real_ip: str) -> None:
+    """Register a real client IP (from X-Forwarded-For/X-Real-IP) for analysis."""
+    if real_ip and not is_local_ip(real_ip) and real_ip not in registered_real_ips:
+        registered_real_ips.add(real_ip)
+        # Trigger immediate analysis for this IP
+        if fingerprinter:
+            fingerprint = fingerprinter.analyze_ip(real_ip, force_ping=True)
+            if fingerprint:
+                socketio.emit("fingerprint_update", fingerprint.to_dict())
 
 
 def create_app(start_capture: bool = True) -> Flask:
@@ -186,7 +198,8 @@ def start_background_tasks() -> None:
         while True:
             socketio.sleep(10)
             try:
-                ips = sniffer.get_unique_remote_ips()
+                # Combine IPs from packet capture and registered real IPs (from proxied requests)
+                ips = sniffer.get_unique_remote_ips() | registered_real_ips
                 for ip in list(ips)[:20]:  # Limit to 20 at a time
                     measurement = rtt_tracker.get_measurement(ip)
                     if measurement.icmp_rtt is None:
@@ -231,6 +244,12 @@ def register_routes(app: Flask) -> None:
 
     @app.route("/")
     def index():
+        # Register real client IP if behind proxy
+        visitor_ip = get_visitor_ip()
+        remote_addr = request.remote_addr or ""
+        if visitor_ip != remote_addr:
+            # Client is behind a proxy, register their real IP for analysis
+            register_real_client_ip(visitor_ip)
         return render_template("index.html")
 
     @app.route("/api/connections")
@@ -308,11 +327,17 @@ def register_routes(app: Flask) -> None:
 
 @socketio.on("connect")
 def handle_connect():
+    # Register real client IP if behind proxy
+    visitor_ip = get_visitor_ip()
+    remote_addr = request.remote_addr or request.environ.get("REMOTE_ADDR") or ""
+    if visitor_ip != remote_addr:
+        # Client is behind a proxy, register their real IP for analysis
+        register_real_client_ip(visitor_ip)
+
     fingerprints = fingerprinter.get_all_fingerprints()
 
     # Filter for demo mode
     if config.demo_mode:
-        visitor_ip = get_visitor_ip()
         fingerprints = {ip: fp for ip, fp in fingerprints.items() if ip == visitor_ip}
 
     for ip, fp in fingerprints.items():
