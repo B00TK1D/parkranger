@@ -137,6 +137,9 @@
         let selectedIp = null;
         let lastListUpdate = 0;  // Rate limiting for list updates
         let pendingListUpdate = null;  // Pending update timer
+        let demoMode = false;  // Will be set from server config
+        let demoDataLoaded = false;  // In demo mode, stop updates after first load
+        let statsInterval = null;  // Reference to stats polling interval
 
         // Initialize map
         const map = L.map('map', {
@@ -158,10 +161,18 @@
         });
 
         socket.on('fingerprint_update', (data) => {
+            // In demo mode, stop updates after first data is loaded
+            if (demoMode && demoDataLoaded) {
+                return;
+            }
             updateFingerprint(data);
         });
 
         socket.on('new_connection', (data) => {
+            // In demo mode, stop updates after first data is loaded
+            if (demoMode && demoDataLoaded) {
+                return;
+            }
             // Create a placeholder fingerprint for immediate display
             const ip = data.ip;
             if (!fingerprints.has(ip)) {
@@ -190,6 +201,15 @@
 
             if (selectedIp === fp.ip) {
                 showDetail(fp.ip);
+            }
+
+            // In demo mode, mark as loaded after first fingerprint and stop polling
+            if (demoMode && !demoDataLoaded && fingerprints.size > 0) {
+                demoDataLoaded = true;
+                if (statsInterval) {
+                    clearInterval(statsInterval);
+                    statsInterval = null;
+                }
             }
         }
 
@@ -394,10 +414,25 @@
         // Initial data load
         async function loadInitialData() {
             try {
+                // First check if we're in demo mode
+                const configResponse = await fetch('/api/config');
+                const configData = await configResponse.json();
+                demoMode = configData.demo_mode || false;
+
                 const response = await fetch('/api/fingerprints');
                 const data = await response.json();
                 for (const [ip, fp] of Object.entries(data)) {
                     updateFingerprint(fp);
+                }
+
+                // In demo mode, if we have data, stop auto-updates
+                if (demoMode && fingerprints.size > 0) {
+                    demoDataLoaded = true;
+                    // Stop the stats polling
+                    if (statsInterval) {
+                        clearInterval(statsInterval);
+                        statsInterval = null;
+                    }
                 }
             } catch (e) {
                 console.error('Failed to load fingerprints:', e);
@@ -405,7 +440,7 @@
         }
 
         loadInitialData();
-        setInterval(updateStats, 5000);
+        statsInterval = setInterval(updateStats, 5000);
     </script>
 </body>
 </html>

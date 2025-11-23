@@ -302,6 +302,7 @@ def register_routes(app: Flask) -> None:
             "interface": config.interface,
             "port_filter": config.port_filter,
             "connection_timeout": config.connection_timeout,
+            "demo_mode": config.demo_mode,
         })
 
 
