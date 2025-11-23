@@ -159,6 +159,27 @@
             updateFingerprint(data);
         });
 
+        socket.on('new_connection', (data) => {
+            // Create a placeholder fingerprint for immediate display
+            const ip = data.ip;
+            if (!fingerprints.has(ip)) {
+                fingerprints.set(ip, {
+                    ip: ip,
+                    location: null,
+                    tcp_rtt_ms: null,
+                    icmp_rtt_ms: null,
+                    rtt_difference_ms: null,
+                    estimated_distance_km: null,
+                    possible_cities: [],
+                    confidence: 0,
+                    last_updated: Date.now() / 1000,
+                    is_vpn_likely: false,
+                });
+                updateFingerprintList();
+                updateStats();
+            }
+        });
+
         function updateFingerprint(fp) {
             fingerprints.set(fp.ip, fp);
             updateFingerprintList();
@@ -209,6 +230,19 @@
             }).join('');
         }
 
+        // Helper function to create circle points for polygon (for donut/ring shape)
+        function createCirclePoints(centerLat, centerLng, radiusKm, numPoints = 64) {
+            const points = [];
+            const earthRadius = 6371; // km
+            for (let i = 0; i < numPoints; i++) {
+                const angle = (i / numPoints) * 2 * Math.PI;
+                const latOffset = (radiusKm / earthRadius) * (180 / Math.PI) * Math.cos(angle);
+                const lngOffset = (radiusKm / earthRadius) * (180 / Math.PI) * Math.sin(angle) / Math.cos(centerLat * Math.PI / 180);
+                points.push([centerLat + latOffset, centerLng + lngOffset]);
+            }
+            return points;
+        }
+
         function updateMapMarker(fp) {
             if (!fp.location) return;
 
@@ -238,18 +272,55 @@
 
             markers.set(fp.ip, marker);
 
-            // Create ring if VPN likely
+            // Create band/ring if VPN likely (10ms uncertainty band)
             if (fp.is_vpn_likely && fp.estimated_distance_km > 0) {
-                const ring = L.circle([lat, lng], {
-                    radius: fp.estimated_distance_km * 1000,
+                const outerRadiusKm = fp.estimated_distance_km;
+                // 10ms RTT = 5ms one-way = 5ms * 200 km/ms = 1000km band width
+                const bandWidthKm = 1000;
+                const innerRadiusKm = Math.max(0, outerRadiusKm - bandWidthKm);
+
+                // Create a layer group to hold both circles and the fill
+                const ringGroup = L.layerGroup();
+
+                // Create filled band using a polygon ring (donut shape)
+                if (innerRadiusKm > 0) {
+                    const outerPoints = createCirclePoints(lat, lng, outerRadiusKm);
+                    const innerPoints = createCirclePoints(lat, lng, innerRadiusKm).reverse();
+                    const bandPolygon = L.polygon([outerPoints, innerPoints], {
+                        color: '#f97316',
+                        fillColor: '#f97316',
+                        fillOpacity: 0.15,
+                        weight: 0
+                    });
+                    ringGroup.addLayer(bandPolygon);
+                }
+
+                // Outer circle stroke
+                const outerCircle = L.circle([lat, lng], {
+                    radius: outerRadiusKm * 1000,
                     color: '#f97316',
-                    fillColor: '#f97316',
-                    fillOpacity: 0.1,
+                    fillColor: 'transparent',
+                    fillOpacity: 0,
                     weight: 2,
                     dashArray: '5, 5'
-                }).addTo(map);
+                });
+                ringGroup.addLayer(outerCircle);
 
-                rings.set(fp.ip, ring);
+                // Inner circle stroke (if inner radius > 0)
+                if (innerRadiusKm > 0) {
+                    const innerCircle = L.circle([lat, lng], {
+                        radius: innerRadiusKm * 1000,
+                        color: '#f97316',
+                        fillColor: 'transparent',
+                        fillOpacity: 0,
+                        weight: 2,
+                        dashArray: '5, 5'
+                    });
+                    ringGroup.addLayer(innerCircle);
+                }
+
+                ringGroup.addTo(map);
+                rings.set(fp.ip, ringGroup);
             }
         }
 
