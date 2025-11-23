@@ -16,6 +16,7 @@ class Config:
     geoip_db_path: Optional[str] = None
     speed_of_light_km_ms: float = 200.0  # ~2/3 speed of light in fiber
     vpn_latency_offset_ms: float = 5.0  # Internal VPN processing latency to subtract
+    demo_mode: bool = False  # Filter traffic to only show visitor's own IP
 
     @classmethod
     def from_env(cls) -> "Config":

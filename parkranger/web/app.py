@@ -1,6 +1,9 @@
+import netifaces
 import os
+import socket
 import time
 from queue import Queue, Empty
+from typing import Optional
 
 from flask import Flask, render_template, jsonify, request
 from flask_socketio import SocketIO, emit
@@ -11,6 +14,7 @@ from ..geo.location import GeoLocator
 from ..geo.cities import CityFinder
 from ..analysis.fingerprint import VPNFingerprinter
 from ..config import config
+from ..db import get_database, Database
 
 
 socketio = SocketIO(cors_allowed_origins="*", async_mode="eventlet")
@@ -21,10 +25,63 @@ geolocator: GeoLocator = None
 city_finder: CityFinder = None
 fingerprinter: VPNFingerprinter = None
 event_queue: Queue = None  # Queue for cross-thread event passing
+database: Database = None
+local_ips: set[str] = set()  # Server's own IP addresses to ignore
+
+
+def get_local_ips() -> set[str]:
+    """Get all IP addresses assigned to local network interfaces."""
+    ips = {"127.0.0.1", "::1", "localhost"}
+    try:
+        for iface in netifaces.interfaces():
+            addrs = netifaces.ifaddresses(iface)
+            # IPv4
+            if netifaces.AF_INET in addrs:
+                for addr in addrs[netifaces.AF_INET]:
+                    if "addr" in addr:
+                        ips.add(addr["addr"])
+            # IPv6
+            if netifaces.AF_INET6 in addrs:
+                for addr in addrs[netifaces.AF_INET6]:
+                    if "addr" in addr:
+                        # Remove scope ID from IPv6 addresses
+                        ip = addr["addr"].split("%")[0]
+                        ips.add(ip)
+    except Exception:
+        pass
+    return ips
+
+
+def is_local_ip(ip: str) -> bool:
+    """Check if an IP is a local/server IP that should be ignored."""
+    if ip in local_ips:
+        return True
+    # Also check for localhost patterns
+    if ip.startswith("127.") or ip == "::1":
+        return True
+    return False
+
+
+def get_visitor_ip() -> str:
+    """Get the real IP of the visitor, respecting X-Forwarded-For headers."""
+    # Check X-Forwarded-For header first (for proxies/load balancers)
+    if request.headers.get("X-Forwarded-For"):
+        # X-Forwarded-For can contain multiple IPs, the first is the original client
+        forwarded_for = request.headers.get("X-Forwarded-For")
+        ips = [ip.strip() for ip in forwarded_for.split(",")]
+        if ips:
+            return ips[0]
+
+    # Fall back to X-Real-IP header
+    if request.headers.get("X-Real-IP"):
+        return request.headers.get("X-Real-IP")
+
+    # Fall back to remote_addr
+    return request.remote_addr or ""
 
 
 def create_app(start_capture: bool = True) -> Flask:
-    global rtt_tracker, sniffer, geolocator, city_finder, fingerprinter, event_queue
+    global rtt_tracker, sniffer, geolocator, city_finder, fingerprinter, event_queue, database, local_ips
 
     app = Flask(__name__, template_folder="templates", static_folder="static")
     app.config["SECRET_KEY"] = os.urandom(24)
@@ -32,11 +89,22 @@ def create_app(start_capture: bool = True) -> Flask:
     # Initialize event queue for cross-thread communication
     event_queue = Queue()
 
+    # Detect local IPs to ignore
+    local_ips = get_local_ips()
+
+    # Initialize database
+    database = get_database()
+
     # Initialize components
     rtt_tracker = RTTTracker()
     geolocator = GeoLocator()
     city_finder = CityFinder()
-    fingerprinter = VPNFingerprinter(rtt_tracker, geolocator, city_finder)
+    fingerprinter = VPNFingerprinter(rtt_tracker, geolocator, city_finder, database=database)
+
+    # Load persisted data from database
+    loaded = fingerprinter.load_from_db()
+    if loaded > 0:
+        print(f"Restored {loaded} fingerprints from database")
 
     sniffer = PacketSniffer(rtt_tracker)
     sniffer.add_callback(queue_packet_event)  # Queue events instead of direct emit
@@ -60,6 +128,10 @@ def queue_packet_event(event_type: str, data: dict) -> None:
 def on_packet_event(event_type: str, data: dict) -> None:
     ip = data.get("ip")
     if not ip:
+        return
+
+    # Ignore local/server IPs
+    if is_local_ip(ip):
         return
 
     if event_type == "new_connection":
@@ -121,6 +193,21 @@ def start_background_tasks() -> None:
 
 
 def register_routes(app: Flask) -> None:
+    def filter_for_demo(data_dict: dict) -> dict:
+        """In demo mode, filter to only show visitor's own IP."""
+        if not config.demo_mode:
+            return data_dict
+        visitor_ip = get_visitor_ip()
+        return {ip: fp for ip, fp in data_dict.items() if ip == visitor_ip}
+
+    def filter_connections_for_demo(connections: list) -> list:
+        """In demo mode, filter connections to only show visitor's own IP."""
+        if not config.demo_mode:
+            return connections
+        visitor_ip = get_visitor_ip()
+        # Connection has src_ip and dst_ip; the visitor's IP is the remote one
+        return [c for c in connections if c.src_ip == visitor_ip or c.dst_ip == visitor_ip]
+
     @app.route("/")
     def index():
         return render_template("index.html")
@@ -128,15 +215,23 @@ def register_routes(app: Flask) -> None:
     @app.route("/api/connections")
     def get_connections():
         connections = sniffer.get_connections()
-        return jsonify([c.to_dict() for c in connections])
+        filtered = filter_connections_for_demo(connections)
+        return jsonify([c.to_dict() for c in filtered])
 
     @app.route("/api/fingerprints")
     def get_fingerprints():
         fingerprints = fingerprinter.get_all_fingerprints()
-        return jsonify({ip: fp.to_dict() for ip, fp in fingerprints.items()})
+        filtered = filter_for_demo({ip: fp.to_dict() for ip, fp in fingerprints.items()})
+        return jsonify(filtered)
 
     @app.route("/api/fingerprint/<ip>")
     def get_fingerprint(ip: str):
+        # In demo mode, only allow querying visitor's own IP
+        if config.demo_mode:
+            visitor_ip = get_visitor_ip()
+            if ip != visitor_ip:
+                return jsonify({"error": "Access denied in demo mode"}), 403
+
         fingerprint = fingerprinter.analyze_ip(ip, force_ping=True)
         if fingerprint:
             return jsonify(fingerprint.to_dict())
@@ -144,6 +239,12 @@ def register_routes(app: Flask) -> None:
 
     @app.route("/api/location/<ip>")
     def get_location(ip: str):
+        # In demo mode, only allow querying visitor's own IP
+        if config.demo_mode:
+            visitor_ip = get_visitor_ip()
+            if ip != visitor_ip:
+                return jsonify({"error": "Access denied in demo mode"}), 403
+
         location = geolocator.lookup(ip)
         if location:
             return jsonify(location.to_dict())
@@ -153,11 +254,21 @@ def register_routes(app: Flask) -> None:
     def get_stats():
         connections = sniffer.get_connections()
         fingerprints = fingerprinter.get_all_fingerprints()
+
+        # Filter for demo mode
+        if config.demo_mode:
+            visitor_ip = get_visitor_ip()
+            connections = [c for c in connections if c.src_ip == visitor_ip or c.dst_ip == visitor_ip]
+            fingerprints = {ip: fp for ip, fp in fingerprints.items() if ip == visitor_ip}
+            unique_ips = {visitor_ip} if visitor_ip in fingerprints else set()
+        else:
+            unique_ips = sniffer.get_unique_remote_ips()
+
         vpn_likely = sum(1 for fp in fingerprints.values() if fp.is_vpn_likely)
 
         return jsonify({
             "active_connections": len(connections),
-            "unique_ips": len(sniffer.get_unique_remote_ips()),
+            "unique_ips": len(unique_ips),
             "analyzed_ips": len(fingerprints),
             "vpn_likely": vpn_likely,
         })
@@ -174,14 +285,28 @@ def register_routes(app: Flask) -> None:
 @socketio.on("connect")
 def handle_connect():
     fingerprints = fingerprinter.get_all_fingerprints()
+
+    # Filter for demo mode
+    if config.demo_mode:
+        visitor_ip = get_visitor_ip()
+        fingerprints = {ip: fp for ip, fp in fingerprints.items() if ip == visitor_ip}
+
     for ip, fp in fingerprints.items():
-        socketio.emit("fingerprint_update", fp.to_dict())
+        emit("fingerprint_update", fp.to_dict())
 
 
 @socketio.on("request_refresh")
 def handle_refresh(data):
     ip = data.get("ip")
-    if ip:
-        fingerprint = fingerprinter.analyze_ip(ip, force_ping=True)
-        if fingerprint:
-            socketio.emit("fingerprint_update", fingerprint.to_dict())
+    if not ip:
+        return
+
+    # In demo mode, only allow refreshing visitor's own IP
+    if config.demo_mode:
+        visitor_ip = get_visitor_ip()
+        if ip != visitor_ip:
+            return
+
+    fingerprint = fingerprinter.analyze_ip(ip, force_ping=True)
+    if fingerprint:
+        emit("fingerprint_update", fingerprint.to_dict())

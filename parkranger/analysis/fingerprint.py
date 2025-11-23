@@ -1,12 +1,15 @@
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 from ..capture.rtt import RTTTracker, RTTMeasurement
 from ..geo.location import GeoLocator, GeoLocation
 from ..geo.cities import CityFinder
 from ..config import config
+
+if TYPE_CHECKING:
+    from ..db import Database
 
 
 @dataclass
@@ -38,12 +41,13 @@ class VPNFingerprint:
 
 
 class VPNFingerprinter:
-    def __init__(self, rtt_tracker: RTTTracker, geolocator: GeoLocator, city_finder: CityFinder):
+    def __init__(self, rtt_tracker: RTTTracker, geolocator: GeoLocator, city_finder: CityFinder, database: Optional["Database"] = None):
         self.rtt_tracker = rtt_tracker
         self.geolocator = geolocator
         self.city_finder = city_finder
         self._fingerprints: dict[str, VPNFingerprint] = {}
         self._lock = threading.Lock()
+        self._db = database
 
     def _rtt_to_distance_km(self, rtt_ms: float) -> float:
         # RTT is round-trip, so divide by 2 for one-way
@@ -136,7 +140,72 @@ class VPNFingerprinter:
         with self._lock:
             self._fingerprints[ip] = fingerprint
 
+        # Persist to database
+        self._save_to_db(fingerprint)
+
         return fingerprint
+
+    def _save_to_db(self, fingerprint: VPNFingerprint) -> None:
+        if self._db is None:
+            return
+        try:
+            self._db.save_fingerprint(
+                ip=fingerprint.ip,
+                location_dict=fingerprint.location.to_dict() if fingerprint.location else None,
+                tcp_rtt_ms=fingerprint.tcp_rtt_ms,
+                icmp_rtt_ms=fingerprint.icmp_rtt_ms,
+                rtt_difference_ms=fingerprint.rtt_difference_ms,
+                estimated_distance_km=fingerprint.estimated_distance_km,
+                possible_cities=fingerprint.possible_cities,
+                confidence=fingerprint.confidence,
+                last_updated=fingerprint.last_updated,
+                is_vpn_likely=fingerprint.is_vpn_likely,
+            )
+        except Exception:
+            pass
+
+    def load_from_db(self) -> int:
+        if self._db is None:
+            return 0
+
+        try:
+            fingerprints_data = self._db.load_all_fingerprints()
+            loaded = 0
+            with self._lock:
+                for fp_data in fingerprints_data:
+                    location = None
+                    if fp_data["location"]:
+                        loc = fp_data["location"]
+                        location = GeoLocation(
+                            ip=loc["ip"],
+                            latitude=loc["latitude"],
+                            longitude=loc["longitude"],
+                            city=loc.get("city"),
+                            region=loc.get("region"),
+                            country=loc.get("country"),
+                            country_code=loc.get("country_code"),
+                            isp=loc.get("isp"),
+                            org=loc.get("org"),
+                            timezone=loc.get("timezone"),
+                        )
+
+                    fingerprint = VPNFingerprint(
+                        ip=fp_data["ip"],
+                        location=location,
+                        tcp_rtt_ms=fp_data["tcp_rtt_ms"],
+                        icmp_rtt_ms=fp_data["icmp_rtt_ms"],
+                        rtt_difference_ms=fp_data["rtt_difference_ms"],
+                        estimated_distance_km=fp_data["estimated_distance_km"],
+                        possible_cities=fp_data["possible_cities"],
+                        confidence=fp_data["confidence"],
+                        last_updated=fp_data["last_updated"],
+                        is_vpn_likely=fp_data["is_vpn_likely"],
+                    )
+                    self._fingerprints[fp_data["ip"]] = fingerprint
+                    loaded += 1
+            return loaded
+        except Exception:
+            return 0
 
     def get_fingerprint(self, ip: str) -> Optional[VPNFingerprint]:
         with self._lock:
@@ -160,4 +229,9 @@ class VPNFingerprinter:
             stale_ips = [ip for ip, fp in self._fingerprints.items() if now - fp.last_updated > max_age]
             for ip in stale_ips:
                 del self._fingerprints[ip]
+                if self._db:
+                    try:
+                        self._db.delete_fingerprint(ip)
+                    except Exception:
+                        pass
             return len(stale_ips)

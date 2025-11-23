@@ -293,13 +293,12 @@
                 });
                 ringGroup.addLayer(outerCircle);
 
-                // Inner circle (min range) - creates visual "hole"
+                // Inner circle (min range) - just the ring outline, no fill
                 if (innerRadiusKm > 0) {
                     const innerCircle = L.circle([lat, lng], {
                         radius: innerRadiusKm * 1000,
                         color: '#f97316',
-                        fillColor: '#161b22',
-                        fillOpacity: 0.9,
+                        fill: false,
                         weight: 3,
                         dashArray: '8, 4'
                     });
