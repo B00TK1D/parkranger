@@ -68,13 +68,18 @@ class RTTTracker:
             self._pending_syns[key] = time.time()
 
     def record_syn_ack(self, src_ip: str, src_port: int, dst_ip: str, dst_port: int) -> Optional[float]:
-        """Record when SYN-ACK is received and calculate RTT from the initial handshake."""
+        """Record when SYN-ACK is received and calculate RTT from the initial handshake.
+
+        When SYN-ACK arrives: src_ip=server, dst_ip=client
+        We want to record RTT for the client (the remote IP we're fingerprinting).
+        """
         key = (dst_ip, dst_port, src_ip, src_port)  # Reversed for response
         with self._lock:
             if key in self._pending_syns:
                 syn_time = self._pending_syns.pop(key)
                 rtt_ms = (time.time() - syn_time) * 1000
-                self._measurements[src_ip].add_tcp_sample(rtt_ms)
+                # Record RTT for the client IP (src_ip of original SYN, dst_ip of SYN-ACK)
+                self._measurements[dst_ip].add_tcp_sample(rtt_ms)
                 return rtt_ms
         return None
 
