@@ -27,6 +27,7 @@ Examples:
     parser.add_argument("--geoip-db", help="Path to MaxMind GeoIP2 database file")
     parser.add_argument("--no-capture", action="store_true", help="Start without packet capture (web UI only)")
     parser.add_argument("--demo", action="store_true", help="Demo mode: filter traffic to show only visitor's own IP")
+    parser.add_argument("--vpn-offset", type=float, default=0.0, help="VPN processing latency offset in ms to subtract (default: 0.0)")
 
     args = parser.parse_args()
 
@@ -43,6 +44,7 @@ Examples:
     config.web_host = args.host
     config.web_port = args.port
     config.demo_mode = args.demo
+    config.vpn_latency_offset_ms = args.vpn_offset
 
     # Check for root/sudo (required for packet capture)
     import os
