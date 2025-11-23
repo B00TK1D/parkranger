@@ -48,12 +48,22 @@ def create_app(start_capture: bool = True) -> Flask:
 
 
 def on_packet_event(event_type: str, data: dict) -> None:
-    if event_type == "rtt_update":
-        ip = data.get("ip")
-        if ip:
-            fingerprint = fingerprinter.analyze_ip(ip)
-            if fingerprint:
-                socketio.emit("fingerprint_update", fingerprint.to_dict())
+    ip = data.get("ip")
+    if not ip:
+        return
+
+    if event_type == "new_connection":
+        # Emit connection immediately, then start analysis in background
+        socketio.emit("new_connection", {"ip": ip, "connection": data.get("connection")})
+        # Try to get location and create initial fingerprint
+        fingerprint = fingerprinter.analyze_ip(ip)
+        if fingerprint:
+            socketio.emit("fingerprint_update", fingerprint.to_dict())
+
+    elif event_type == "rtt_update":
+        fingerprint = fingerprinter.analyze_ip(ip)
+        if fingerprint:
+            socketio.emit("fingerprint_update", fingerprint.to_dict())
 
 
 def start_background_tasks() -> None:

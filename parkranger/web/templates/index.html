@@ -159,6 +159,27 @@
             updateFingerprint(data);
         });
 
+        socket.on('new_connection', (data) => {
+            // Create a placeholder fingerprint for immediate display
+            const ip = data.ip;
+            if (!fingerprints.has(ip)) {
+                fingerprints.set(ip, {
+                    ip: ip,
+                    location: null,
+                    tcp_rtt_ms: null,
+                    icmp_rtt_ms: null,
+                    rtt_difference_ms: null,
+                    estimated_distance_km: null,
+                    possible_cities: [],
+                    confidence: 0,
+                    last_updated: Date.now() / 1000,
+                    is_vpn_likely: false,
+                });
+                updateFingerprintList();
+                updateStats();
+            }
+        });
+
         function updateFingerprint(fp) {
             fingerprints.set(fp.ip, fp);
             updateFingerprintList();

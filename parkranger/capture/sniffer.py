@@ -134,9 +134,11 @@ class PacketSniffer:
             return  # Skip local-to-local or remote-to-remote
 
         conn_key = (min(src_ip, dst_ip), min(src_port, dst_port), max(src_ip, dst_ip), max(src_port, dst_port))
+        is_new_connection = False
 
         with self._lock:
             if conn_key not in self._connections:
+                is_new_connection = True
                 if not is_outgoing:  # Incoming connection
                     self._connections[conn_key] = Connection(
                         src_ip=src_ip,
@@ -156,6 +158,12 @@ class PacketSniffer:
             conn.last_seen = time.time()
             conn.packets += 1
             conn.bytes_transferred += len(packet)
+
+        if is_new_connection:
+            self._notify_callbacks("new_connection", {
+                "ip": remote_ip,
+                "connection": conn.to_dict(),
+            })
 
         # Track TCP handshake for RTT
         if flags & 0x02 and not (flags & 0x10):  # SYN only

@@ -100,16 +100,23 @@ class VPNFingerprinter:
         # Update fingerprint
         fingerprint.tcp_rtt_ms = measurement.tcp_rtt
         fingerprint.icmp_rtt_ms = measurement.icmp_rtt
-        fingerprint.rtt_difference_ms = measurement.rtt_difference
         fingerprint.confidence = self._calculate_confidence(measurement)
         fingerprint.last_updated = time.time()
+
+        # Calculate adjusted RTT difference (subtract VPN internal processing latency)
+        raw_diff = measurement.rtt_difference
+        if raw_diff is not None:
+            adjusted_diff = max(0, raw_diff - config.vpn_latency_offset_ms)
+            fingerprint.rtt_difference_ms = adjusted_diff
+        else:
+            fingerprint.rtt_difference_ms = None
 
         # Calculate estimated distance from VPN if we have RTT difference
         if fingerprint.rtt_difference_ms is not None and fingerprint.rtt_difference_ms > 0:
             fingerprint.estimated_distance_km = self._rtt_to_distance_km(fingerprint.rtt_difference_ms)
 
-            # Determine if VPN is likely (RTT difference > 5ms suggests additional hop)
-            fingerprint.is_vpn_likely = fingerprint.rtt_difference_ms > 5
+            # Determine if VPN is likely (adjusted RTT difference > 0 suggests additional hop)
+            fingerprint.is_vpn_likely = fingerprint.rtt_difference_ms > 0
 
             # Find cities near the estimated ring
             if fingerprint.location and fingerprint.estimated_distance_km > 0:
