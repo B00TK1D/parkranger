@@ -27,6 +27,7 @@ fingerprinter: VPNFingerprinter = None
 event_queue: Queue = None  # Queue for cross-thread event passing
 database: Database = None
 local_ips: set[str] = set()  # Server's own IP addresses to ignore
+last_refresh_time: dict[str, float] = {}  # Rate limiting for refreshes
 
 
 def get_local_ips() -> set[str]:
@@ -58,6 +59,16 @@ def is_local_ip(ip: str) -> bool:
         return True
     # Also check for localhost patterns
     if ip.startswith("127.") or ip == "::1":
+        return True
+    return False
+
+
+def can_refresh_ip(ip: str, min_interval: float = 1.0) -> bool:
+    """Check if enough time has passed since last refresh for this IP."""
+    now = time.time()
+    last_time = last_refresh_time.get(ip, 0)
+    if now - last_time >= min_interval:
+        last_refresh_time[ip] = now
         return True
     return False
 
@@ -232,7 +243,9 @@ def register_routes(app: Flask) -> None:
             if ip != visitor_ip:
                 return jsonify({"error": "Access denied in demo mode"}), 403
 
-        fingerprint = fingerprinter.analyze_ip(ip, force_ping=True)
+        # Rate limit refreshes to once per second per IP
+        force_ping = can_refresh_ip(ip)
+        fingerprint = fingerprinter.analyze_ip(ip, force_ping=force_ping)
         if fingerprint:
             return jsonify(fingerprint.to_dict())
         return jsonify({"error": "No data available for this IP"}), 404
@@ -307,6 +320,8 @@ def handle_refresh(data):
         if ip != visitor_ip:
             return
 
-    fingerprint = fingerprinter.analyze_ip(ip, force_ping=True)
+    # Rate limit refreshes to once per second per IP
+    force_ping = can_refresh_ip(ip)
+    fingerprint = fingerprinter.analyze_ip(ip, force_ping=force_ping)
     if fingerprint:
         emit("fingerprint_update", fingerprint.to_dict())
